@@ -1,4 +1,5 @@
 #include "server.h"
+#include "mime.h"
 #include "parser.h"
 #include <errno.h>
 #include <netdb.h>
@@ -6,14 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #define PORT "8080"
 #define BACKLOG 10
 #define RECV_BUFFER_SIZE 1024
-#define BODY_BUFFER_SIZE 1024
-#define RESPONSE_BUFFER_SIZE (BODY_BUFFER_SIZE + 512)
 
 int run_server(void) {
     int status;
@@ -72,17 +72,51 @@ int run_server(void) {
                     fprintf(stderr, "Parser failed!\n");
                     continue;
                 }
-                char body_buf[BODY_BUFFER_SIZE];
-                char response_buf[RESPONSE_BUFFER_SIZE];
+                fileinfo_t curr_file;
+                char filepath[sizeof(current_request.request_target) + 8];
                 // send
-                snprintf(body_buf, BODY_BUFFER_SIZE,
-                         "%s method request for %s received by host: %s.", current_request.method,
-                         current_request.request_target, current_request.host);
-                snprintf(
-                    response_buf, RESPONSE_BUFFER_SIZE,
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
-                    (int)strlen(body_buf), body_buf);
+                if (strcmp(current_request.request_target, "/") == 0) {
+                    snprintf(filepath, sizeof(filepath), "public/%s", "index.html");
+                } else {
+                    snprintf(filepath, sizeof(filepath), "public%s",
+                             current_request.request_target);
+                }
 
+                int status = get_fileinfo(filepath, &curr_file);
+                char *response_buf = NULL;
+                char *extension = malloc(16);
+                if (extension == NULL) {
+                    fprintf(stderr, "Memory allocation for extension failed\n");
+                    continue;
+                }
+                // extract extension for requested file
+                get_extension(filepath, extension);
+
+                if (status == -1) {
+                    response_buf = malloc(512);
+                    if (response_buf == NULL) {
+                        fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
+                        continue;
+                    }
+                    snprintf(response_buf, 512,
+                             "HTTP/1.1 404 Not Found\r\nContent-Type: "
+                             "text/plain\r\nContent-Length: "
+                             "10\r\n\r\n%s",
+                             "Not Found");
+                } else {
+                    response_buf = malloc(curr_file.length + 512);
+                    if (response_buf == NULL) {
+                        fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
+                        free(curr_file.content);
+                        continue;
+                    }
+                    snprintf(response_buf, curr_file.length + 512,
+                             "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: "
+                             "%d\r\n\r\n%s",
+                             get_content_type(get_mimetype(extension)), curr_file.length,
+                             curr_file.content);
+                    free(curr_file.content);
+                }
                 int bytes_sent = send(new_fd, response_buf, strlen(response_buf), 0);
                 if (bytes_sent == -1) {
                     fprintf(stderr, "%s\n", strerror(errno));
@@ -90,11 +124,52 @@ int run_server(void) {
                 } else if (bytes_sent == (int)strlen(response_buf)) {
                     printf("Response sent: %d bytes\n", bytes_sent);
                 }
+                free(response_buf);
+                free(extension);
             }
         }
         close(new_fd);
     }
     close(sock_fd);
     freeaddrinfo(servinfo);
+    return 0;
+}
+
+int get_fileinfo(char *filepath, fileinfo_t *curr_file) {
+    FILE *read_ptr;
+
+    read_ptr = fopen(filepath, "r");
+    if (read_ptr == NULL) {
+        fprintf(stderr, "Error opening file for reading: %s\n", strerror(errno));
+        return -1;
+    }
+
+    int fd = fileno(read_ptr);
+    if (fd == -1) {
+        fclose(read_ptr);
+        fprintf(stderr, "Failed to get file discriptor: %s\n", strerror(errno));
+        return -1;
+    }
+
+    struct stat file_info;
+    if (fstat(fd, &file_info) == -1) {
+        fclose(read_ptr);
+        fprintf(stderr, "Error executing fstat: %s\n", strerror(errno));
+        return -1;
+    }
+
+    char *buf = malloc(file_info.st_size + 1);
+    if (buf == NULL) {
+        fclose(read_ptr);
+        fprintf(stderr, "Memory allocation failed\n");
+        return -1;
+    }
+    fread(buf, 1, file_info.st_size, read_ptr);
+    buf[file_info.st_size] = '\0';
+
+    curr_file->length = (int)file_info.st_size;
+    curr_file->content = buf;
+
+    fclose(read_ptr);
     return 0;
 }

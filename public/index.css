@@ -1,0 +1,12 @@
+body {
+    font-family: system-ui, sans-serif;
+    max-width: 65ch;
+    margin: 4rem auto;
+    padding: 0 1rem;
+    background-color: #f9f9f9; /* Subtle off-white */
+    color: #333;
+}
+
+p {
+    line-height: 1.6;
+}
