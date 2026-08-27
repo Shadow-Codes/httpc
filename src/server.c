@@ -3,6 +3,7 @@
 #include "parser.h"
 #include <errno.h>
 #include <netdb.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +17,7 @@
 #define RECV_BUFFER_SIZE 1024
 
 int run_server(void) {
-    int status;
+    int setup_status;
     struct addrinfo hints;
     struct addrinfo *servinfo;
     struct sockaddr_storage their_info;
@@ -26,8 +27,8 @@ int run_server(void) {
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
 
-    if ((status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+    if ((setup_status = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(setup_status));
         exit(1);
     }
 
@@ -73,16 +74,12 @@ int run_server(void) {
                     continue;
                 }
                 fileinfo_t curr_file;
-                char filepath[sizeof(current_request.request_target) + 8];
+                size_t filepath_size = sizeof(current_request.request_target) + 8;
+                char filepath[filepath_size];
+                // call helper to build filepath as per request
+                build_filepath(&current_request, filepath, filepath_size);
                 // send
-                if (strcmp(current_request.request_target, "/") == 0) {
-                    snprintf(filepath, sizeof(filepath), "public/%s", "index.html");
-                } else {
-                    snprintf(filepath, sizeof(filepath), "public%s",
-                             current_request.request_target);
-                }
-
-                int status = get_fileinfo(filepath, &curr_file);
+                int file_status = get_fileinfo(filepath, &curr_file);
                 char *response_buf = NULL;
                 char *extension = malloc(16);
                 if (extension == NULL) {
@@ -91,32 +88,12 @@ int run_server(void) {
                 }
                 // extract extension for requested file
                 get_extension(filepath, extension);
-
-                if (status == -1) {
-                    response_buf = malloc(512);
-                    if (response_buf == NULL) {
-                        fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
-                        continue;
-                    }
-                    snprintf(response_buf, 512,
-                             "HTTP/1.1 404 Not Found\r\nContent-Type: "
-                             "text/plain\r\nContent-Length: "
-                             "10\r\n\r\n%s",
-                             "Not Found");
-                } else {
-                    response_buf = malloc(curr_file.length + 512);
-                    if (response_buf == NULL) {
-                        fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
-                        free(curr_file.content);
-                        continue;
-                    }
-                    snprintf(response_buf, curr_file.length + 512,
-                             "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: "
-                             "%d\r\n\r\n%s",
-                             get_content_type(get_mimetype(extension)), curr_file.length,
-                             curr_file.content);
-                    free(curr_file.content);
+                build_response(file_status, &curr_file, extension, &response_buf);
+                if (response_buf == NULL) {
+                    free(extension);
+                    continue;
                 }
+
                 int bytes_sent = send(new_fd, response_buf, strlen(response_buf), 0);
                 if (bytes_sent == -1) {
                     fprintf(stderr, "%s\n", strerror(errno));
@@ -126,6 +103,9 @@ int run_server(void) {
                 }
                 free(response_buf);
                 free(extension);
+                if (file_status != -1) {
+                    free(curr_file.content);
+                }
             }
         }
         close(new_fd);
@@ -134,6 +114,14 @@ int run_server(void) {
     freeaddrinfo(servinfo);
     return 0;
 }
+
+void build_filepath(http_request_t *current_request, char *filepath, size_t filepath_size) {
+    if (strcmp(current_request->request_target, "/") == 0) {
+        snprintf(filepath, filepath_size, "public/%s", "index.html");
+    } else {
+        snprintf(filepath, filepath_size, "public%s", current_request->request_target);
+    }
+};
 
 int get_fileinfo(char *filepath, fileinfo_t *curr_file) {
     FILE *read_ptr;
@@ -172,4 +160,30 @@ int get_fileinfo(char *filepath, fileinfo_t *curr_file) {
 
     fclose(read_ptr);
     return 0;
+}
+
+void build_response(int file_status, fileinfo_t *curr_file, char *extension, char **response_buf) {
+    if (file_status == -1) {
+        *response_buf = malloc(512);
+        if (*response_buf == NULL) {
+            fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
+            return;
+        }
+        snprintf(*response_buf, 512,
+                 "HTTP/1.1 404 Not Found\r\nContent-Type: "
+                 "text/plain\r\nContent-Length: "
+                 "10\r\n\r\n%s",
+                 "Not Found");
+    } else {
+        *response_buf = malloc(curr_file->length + 512);
+        if (*response_buf == NULL) {
+            fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
+            free(curr_file->content);
+            return;
+        }
+        snprintf(*response_buf, curr_file->length + 512,
+                 "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: "
+                 "%d\r\n\r\n%s",
+                 get_content_type(get_mimetype(extension)), curr_file->length, curr_file->content);
+    }
 }
