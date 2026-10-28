@@ -7,7 +7,7 @@ void get_extension(char *request_target, char *extension) {
         extension[0] = '\0';
         return;
     }
-    char *end_of_extension = strchr(start_of_extension + 1, '\0'); 
+    char *end_of_extension = strchr(start_of_extension + 1, '\0');
     if (end_of_extension == NULL) {
         extension[0] = '\0';
         return;
@@ -17,9 +17,8 @@ void get_extension(char *request_target, char *extension) {
 }
 
 static const mime_mapping_t mime_table[] = {
-    {"html", TYPE_HTML},
-    {"css", TYPE_CSS},
-    {"", TYPE_UNKNOWN},
+    {"html", TYPE_HTML}, {"css", TYPE_CSS},   {"ico", TYPE_ICON}, {"png", TYPE_PNG},
+    {"jpg", TYPE_JPEG},  {"jpeg", TYPE_JPEG}, {"", TYPE_UNKNOWN},
 };
 
 mimetype_t get_mimetype(char *extension) {
@@ -35,12 +34,18 @@ mimetype_t get_mimetype(char *extension) {
 
 const char *get_content_type(mimetype_t type) {
     switch (type) {
-        case TYPE_HTML:
-            return "text/html";
-        case TYPE_CSS:
-            return "text/css";
-        case TYPE_UNKNOWN:
-        default:
-            return "application/octet-stream";
+    case TYPE_HTML:
+        return "text/html";
+    case TYPE_CSS:
+        return "text/css";
+    case TYPE_ICON:
+        return "image/x-icon";
+    case TYPE_JPEG:
+        return "image/jpeg";
+    case TYPE_PNG:
+        return "image/png";
+    case TYPE_UNKNOWN:
+    default:
+        return "application/octet-stream";
     }
 }

@@ -1,8 +1,11 @@
 #include "server.h"
+#include "http_error_codes.h"
 #include "mime.h"
 #include "parser.h"
+#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,17 +13,19 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define PORT "8080"
 #define BACKLOG 10
-#define RECV_BUFFER_SIZE 1024
+#define RECV_BUFFER_SIZE 8192
 
 int run_server(void) {
     int setup_status;
     struct addrinfo hints;
     struct addrinfo *servinfo;
     struct sockaddr_storage their_info;
+    struct sigaction sa;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -48,6 +53,17 @@ int run_server(void) {
         exit(1);
     }
 
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+        fprintf(stderr, "sigaction: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    printf("server: waiting for connections...\n");
+
     while (1) {
         socklen_t addr_size = sizeof(their_info);
         int new_fd = accept(sock_fd, (struct sockaddr *)&their_info, &addr_size);
@@ -56,63 +72,92 @@ int run_server(void) {
             exit(1);
         }
 
-        while (1) {
-            char recv_buf[RECV_BUFFER_SIZE];
-            // receive
-            int bytes_received = recv(new_fd, recv_buf, RECV_BUFFER_SIZE, 0);
-            if (bytes_received == -1) {
-                fprintf(stderr, "receive: %s\n", strerror(errno));
-                exit(1);
-            } else if (bytes_received == 0) {
-                printf("Client Disconnected\n");
-                break;
-            } else {
-                recv_buf[bytes_received] = '\0';
-                http_request_t current_request;
-                if (parse_request(recv_buf, &current_request) == -1) {
-                    fprintf(stderr, "Parser failed!\n");
-                    continue;
-                }
-                fileinfo_t curr_file;
-                size_t filepath_size = sizeof(current_request.request_target) + 8;
-                char filepath[filepath_size];
-                // call helper to build filepath as per request
-                build_filepath(&current_request, filepath, filepath_size);
-                // send
-                int file_status = get_fileinfo(filepath, &curr_file);
-                char *response_buf = NULL;
-                char *extension = malloc(16);
-                if (extension == NULL) {
-                    fprintf(stderr, "Memory allocation for extension failed\n");
-                    continue;
-                }
-                // extract extension for requested file
-                get_extension(filepath, extension);
-                build_response(file_status, &curr_file, extension, &response_buf);
-                if (response_buf == NULL) {
-                    free(extension);
-                    continue;
-                }
+        if (!fork()) {
+            close(sock_fd); // child process doesn't need listener
 
-                int bytes_sent = send(new_fd, response_buf, strlen(response_buf), 0);
-                if (bytes_sent == -1) {
-                    fprintf(stderr, "%s\n", strerror(errno));
+            // receive
+            char recv_buf[RECV_BUFFER_SIZE] = "";
+            int total = 0;
+            while (1) {
+                int bytes_received =
+                    recv(new_fd, &recv_buf[total], RECV_BUFFER_SIZE - total - 1, 0);
+                if (bytes_received == -1) {
+                    fprintf(stderr, "receive: %s\n", strerror(errno));
+                    close(new_fd);
                     exit(1);
-                } else if (bytes_sent == (int)strlen(response_buf)) {
-                    printf("Response sent: %d bytes\n", bytes_sent);
-                }
-                free(response_buf);
-                free(extension);
-                if (file_status != -1) {
-                    free(curr_file.content);
+                } else if (bytes_received == 0) {
+                    printf("Client Disconnected\n");
+                    close(new_fd);
+                    exit(1);
+                } else {
+                    total += bytes_received;
+                    recv_buf[total] = '\0';
+                    if (strstr(recv_buf, "\r\n\r\n")) {
+                        break;
+                    } else if (total == RECV_BUFFER_SIZE - 1) {
+                        send_error(new_fd, 431);
+                        close(new_fd);
+                        exit(1);
+                    }
                 }
             }
+
+            http_request_t current_request;
+            int status_code = parse_request(recv_buf, &current_request);
+            if (status_code != 0) {
+                send_error(new_fd, status_code == -1 ? 400 : status_code);
+                fprintf(stderr, "Parser failed!\n");
+                close(new_fd);
+                exit(1);
+            }
+            fileinfo_t curr_file;
+            size_t filepath_size = sizeof(current_request.request_target) + 8;
+            char filepath[filepath_size];
+            // call helper to build filepath as per request
+            build_filepath(&current_request, filepath, filepath_size);
+            // send
+            int file_status = get_fileinfo(filepath, &curr_file);
+            if (file_status != 0) {
+                send_error(new_fd, file_status);
+                close(new_fd);
+                exit(1);
+            }
+            char *response_buf = NULL;
+            char *extension = malloc(16);
+            if (extension == NULL) {
+                fprintf(stderr, "Memory allocation for extension failed\n");
+                close(new_fd);
+                exit(1);
+            }
+            // extract extension for requested file
+            get_extension(filepath, extension);
+            send_valid_response(new_fd, &curr_file, extension);
+
+            free(response_buf);
+            free(extension);
+            close(new_fd);
+            exit(0);
         }
         close(new_fd);
     }
     close(sock_fd);
     freeaddrinfo(servinfo);
     return 0;
+}
+
+void sigchld_handler(int signum) {
+    (void)signum;
+
+    /*
+    waitpid() runs asynchronously right inside parent process
+    waitpid() call can silently overwrite errno
+    */
+    int saved_errno = errno;
+
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+
+    errno = saved_errno;
 }
 
 void build_filepath(http_request_t *current_request, char *filepath, size_t filepath_size) {
@@ -126,64 +171,104 @@ void build_filepath(http_request_t *current_request, char *filepath, size_t file
 int get_fileinfo(char *filepath, fileinfo_t *curr_file) {
     FILE *read_ptr;
 
-    read_ptr = fopen(filepath, "r");
+    read_ptr = fopen(filepath, "rb");
     if (read_ptr == NULL) {
-        fprintf(stderr, "Error opening file for reading: %s\n", strerror(errno));
-        return -1;
+        int err = errno;
+        fprintf(stderr, "Error opening file for reading: %s\n", strerror(err));
+        if (err == ENOENT)
+            return 404;
+        if (err == EACCES)
+            return 403;
+        return 500;
     }
 
     int fd = fileno(read_ptr);
     if (fd == -1) {
         fclose(read_ptr);
         fprintf(stderr, "Failed to get file discriptor: %s\n", strerror(errno));
-        return -1;
+        return 500;
     }
 
     struct stat file_info;
     if (fstat(fd, &file_info) == -1) {
         fclose(read_ptr);
         fprintf(stderr, "Error executing fstat: %s\n", strerror(errno));
-        return -1;
+        return 500;
     }
 
-    char *buf = malloc(file_info.st_size + 1);
-    if (buf == NULL) {
-        fclose(read_ptr);
-        fprintf(stderr, "Memory allocation failed\n");
-        return -1;
-    }
-    fread(buf, 1, file_info.st_size, read_ptr);
-    buf[file_info.st_size] = '\0';
+    curr_file->length = file_info.st_size;
+    curr_file->file_handler = read_ptr;
 
-    curr_file->length = (int)file_info.st_size;
-    curr_file->content = buf;
-
-    fclose(read_ptr);
     return 0;
 }
 
-void build_response(int file_status, fileinfo_t *curr_file, char *extension, char **response_buf) {
-    if (file_status == -1) {
-        *response_buf = malloc(512);
-        if (*response_buf == NULL) {
-            fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
-            return;
-        }
-        snprintf(*response_buf, 512,
-                 "HTTP/1.1 404 Not Found\r\nContent-Type: "
-                 "text/plain\r\nContent-Length: "
-                 "10\r\n\r\n%s",
-                 "Not Found");
-    } else {
-        *response_buf = malloc(curr_file->length + 512);
-        if (*response_buf == NULL) {
-            fprintf(stderr, "Dynamic memory allocation for HTTP response failed!\n");
-            free(curr_file->content);
-            return;
-        }
-        snprintf(*response_buf, curr_file->length + 512,
-                 "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: "
-                 "%d\r\n\r\n%s",
-                 get_content_type(get_mimetype(extension)), curr_file->length, curr_file->content);
+void send_valid_response(int new_fd, fileinfo_t *curr_file, char *extension) {
+    char response_headers[512];
+
+    snprintf(response_headers, 512,
+             "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: "
+             "%zu\r\n\r\n",
+             get_content_type(get_mimetype(extension)), curr_file->length);
+    ssize_t send_status = send(new_fd, response_headers, strlen(response_headers), 0);
+
+    if (send_status == -1) {
+        fprintf(stderr, "%s\n", strerror(errno));
+        fclose(curr_file->file_handler);
+        close(new_fd);
+        exit(1);
+    } else if (send_status > 0) {
+        printf("Response sent: %zd bytes\n", send_status);
     }
+
+    printf("Sending Requested File...\n");
+    char chunk_buf[8192];
+    size_t file_sent = 0;
+    while (file_sent < curr_file->length) {
+        size_t chunk_len = fread(chunk_buf, 1, 8192, curr_file->file_handler);
+        if (chunk_len == 0) {
+            break;
+        }
+        size_t chunk_sent = 0;
+        while (chunk_sent != chunk_len) {
+            ssize_t chunk_status = send(new_fd, chunk_buf + chunk_sent, chunk_len - chunk_sent, 0);
+            if (chunk_status == -1) {
+                fprintf(stderr, "%s\n", strerror(errno));
+                fclose(curr_file->file_handler);
+                close(new_fd);
+                exit(1);
+            } else if (chunk_status > 0) {
+                chunk_sent += chunk_status;
+            }
+        }
+        file_sent += chunk_len;
+    }
+
+    if (file_sent != curr_file->length) {
+        fprintf(stderr, "File sent is incomplete\nActual size: %zu\nSent size: %zu\n",
+                curr_file->length, file_sent);
+    }
+
+    fclose(curr_file->file_handler);
+}
+
+void send_error(int new_fd, int code) {
+    char response_buf[512];
+    const char *phrase = get_reason_phrase(code);
+
+    snprintf(response_buf, 512,
+             "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: "
+             "%zu\r\nConnection: "
+             "close\r\n\r\n%s",
+             code, phrase, strlen(phrase), phrase);
+
+    send(new_fd, response_buf, strlen(response_buf), 0);
+}
+
+const char *get_reason_phrase(int code) {
+    for (size_t i = 0; i < registery_len; i++) {
+        if (code_registery[i].code == code) {
+            return code_registery[i].phrase;
+        }
+    }
+    return "Error";
 }
