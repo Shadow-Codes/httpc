@@ -113,8 +113,15 @@ int run_server(void) {
             fileinfo_t curr_file;
             size_t filepath_size = sizeof(current_request.request_target) + 8;
             char filepath[filepath_size];
+
             // call helper to build filepath as per request
-            build_filepath(&current_request, filepath, filepath_size);
+            int filepath_status = build_filepath(&current_request, filepath, filepath_size);
+            if (filepath_status != 0) {
+                send_error(new_fd, filepath_status);
+                close(new_fd);
+                exit(1);
+            }
+
             // send
             int file_status = get_fileinfo(filepath, &curr_file);
             if (file_status != 0) {
@@ -160,12 +167,51 @@ void sigchld_handler(int signum) {
     errno = saved_errno;
 }
 
-void build_filepath(http_request_t *current_request, char *filepath, size_t filepath_size) {
-    if (strcmp(current_request->request_target, "/") == 0) {
-        snprintf(filepath, filepath_size, "public/%s", "index.html");
-    } else {
-        snprintf(filepath, filepath_size, "public%s", current_request->request_target);
+int build_filepath(http_request_t *current_request, char *filepath, size_t filepath_size) {
+    char *allowed_directory = "public/";
+    char *abs_allowed_directory = realpath(allowed_directory, NULL);
+    if (abs_allowed_directory == NULL) {
+        if (errno == ENOENT) {
+            return 404;
+        } else {
+            return 403;
+        }
     }
+    size_t abs_allowed_directory_len = strlen(abs_allowed_directory);
+
+    if (strcmp(current_request->request_target, "/") == 0) {
+        snprintf(filepath, filepath_size, "%s%s", allowed_directory, "index.html");
+    } else {
+        snprintf(filepath, filepath_size, "%s%s", allowed_directory,
+                 current_request->request_target);
+    }
+
+    char *absolute_path = realpath(filepath, NULL);
+    if (absolute_path == NULL) {
+        if (errno == ENOENT) {
+            free(abs_allowed_directory);
+            return 404;
+        } else {
+            free(abs_allowed_directory);
+            return 403;
+        }
+    }
+
+    if (strncmp(absolute_path, abs_allowed_directory, abs_allowed_directory_len) != 0) {
+        free(abs_allowed_directory);
+        free(absolute_path);
+        return 403;
+    }
+
+    if (absolute_path[abs_allowed_directory_len] != '/') {
+        free(abs_allowed_directory);
+        free(absolute_path);
+        return 403;
+    }
+
+    free(abs_allowed_directory);
+    free(absolute_path);
+    return 0;
 };
 
 int get_fileinfo(char *filepath, fileinfo_t *curr_file) {

@@ -13,7 +13,7 @@ typedef struct fileinfo {
 
 int run_server(void);
 void sigchld_handler(int signum);
-void build_filepath(http_request_t *curr_file, char *filepath, size_t filepath_size);
+int build_filepath(http_request_t *curr_file, char *filepath, size_t filepath_size);
 int get_fileinfo(char *path, fileinfo_t *curr_file);
 void send_valid_response(int new_fd, fileinfo_t *curr_file, char *file_extension);
 void send_error(int new_fd, int code);
