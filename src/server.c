@@ -242,6 +242,11 @@ int get_fileinfo(char *filepath, fileinfo_t *curr_file) {
         return 500;
     }
 
+    if (!S_ISREG(file_info.st_mode)) {
+        fclose(read_ptr);
+        return 404;
+    }
+
     curr_file->length = file_info.st_size;
     curr_file->file_handler = read_ptr;
 
