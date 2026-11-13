@@ -1,19 +1,28 @@
 #include "mime.h"
+#include <stddef.h>
 #include <string.h>
 
-void get_extension(char *request_target, char *extension) {
-    char *start_of_extension = strchr(request_target, '.');
+int get_extension(char *request_target, char *extension) {
+    char *start_of_extension = strrchr(request_target, '.');
     if (start_of_extension == NULL) {
         extension[0] = '\0';
-        return;
+        return -1;
     }
     char *end_of_extension = strchr(start_of_extension + 1, '\0');
     if (end_of_extension == NULL) {
         extension[0] = '\0';
-        return;
+        return -1;
     }
-    memcpy(extension, start_of_extension + 1, end_of_extension - (start_of_extension + 1));
-    extension[end_of_extension - (start_of_extension + 1)] = '\0';
+
+    size_t extension_len = end_of_extension - (start_of_extension + 1);
+    if (extension_len < MAX_EXTENSION) {
+        memcpy(extension, start_of_extension + 1, extension_len);
+        extension[extension_len] = '\0';
+    } else {
+        extension[0] = '\0';
+        return -1;
+    }
+    return 0;
 }
 
 static const mime_mapping_t mime_table[] = {

@@ -1,6 +1,8 @@
 #ifndef MIME_H
 #define MIME_H
 
+#define MAX_EXTENSION 16
+
 typedef enum MimeType {
     TYPE_HTML,
     TYPE_CSS,
@@ -15,7 +17,7 @@ typedef struct mime_mapping {
     mimetype_t type;
 } mime_mapping_t;
 
-void get_extension(char *request_target, char *extension);
+int get_extension(char *request_target, char *extension);
 mimetype_t get_mimetype(char *extension);
 const char *get_content_type(mimetype_t type);
 

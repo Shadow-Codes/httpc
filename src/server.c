@@ -130,18 +130,11 @@ int run_server(void) {
                 exit(1);
             }
             char *response_buf = NULL;
-            char *extension = malloc(16);
-            if (extension == NULL) {
-                fprintf(stderr, "Memory allocation for extension failed\n");
-                close(new_fd);
-                exit(1);
-            }
-            // extract extension for requested file
+            char extension[MAX_EXTENSION];
             get_extension(filepath, extension);
             send_valid_response(new_fd, &curr_file, extension);
 
             free(response_buf);
-            free(extension);
             close(new_fd);
             exit(0);
         }
