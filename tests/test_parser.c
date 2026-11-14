@@ -47,6 +47,19 @@ static MunitResult test_wrong_http_response(const MunitParameter params[], void 
     return MUNIT_OK;
 }
 
+static MunitResult test_unsupported_method(const MunitParameter params[], void *user_data) {
+    (void)params;
+    (void)user_data;
+
+    char unsupported_method_request[] = "POST / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
+    http_request_t result;
+    int status = parse_request(unsupported_method_request, &result);
+
+    munit_assert_int(status, ==, 405);
+
+    return MUNIT_OK;
+}
+
 static MunitResult test_bad_protocol(const MunitParameter params[], void *user_data) {
     (void)params;
     (void)user_data;
@@ -79,6 +92,7 @@ static MunitTest tests[] = {
      NULL},
     {"/test_host_without_space", test_host_without_space, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {"/test_wrong_response", test_wrong_http_response, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {"/test_unsupported_method", test_unsupported_method, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {"/test_bad_protocol", test_bad_protocol, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {"/test_missing_protocol", test_missing_protocol, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},

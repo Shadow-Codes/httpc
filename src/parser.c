@@ -44,6 +44,11 @@ int parse_http_status_line(char *buf, http_request_t *req, size_t length) {
     } else {
         return -1;
     }
+    // GET method only for now
+    if (strcmp(req->method, "GET") != 0) {
+        return 405;
+    }
+
     if (request_target_len < sizeof(req->request_target)) {
         memcpy(req->request_target, method + 1, request_target - (method + 1));
         req->request_target[request_target - (method + 1)] = '\0';

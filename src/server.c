@@ -2,7 +2,6 @@
 #include "http_error_codes.h"
 #include "mime.h"
 #include "parser.h"
-#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <netdb.h>
 #include <signal.h>
@@ -129,12 +128,10 @@ int run_server(void) {
                 close(new_fd);
                 exit(1);
             }
-            char *response_buf = NULL;
             char extension[MAX_EXTENSION];
             get_extension(filepath, extension);
             send_valid_response(new_fd, &curr_file, extension);
 
-            free(response_buf);
             close(new_fd);
             exit(0);
         }
